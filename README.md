@@ -83,7 +83,8 @@ those to override some lines of code in tests
 
 Our app has more issues than that, all of them having a common factor: tight coupling.
 More specifically, both `requests` library and `blockchain.info` are tightly wired in
-our application. Luckily, our application is small enough That brings the following issues:
+our application. One could argue it is still small enough and grasping everything
+is not a problem. But as the app grows, the following issues will arise:
 - If a critical bug is discovered in `requests` or the library becomes no longer maintained, we
 will need to replace it. In our case, it will mean to go over the whole codebase and rewrite
 all calls to it that can be arbitrarily scattered. If we even manage to do it correctly, it will
@@ -218,3 +219,89 @@ and to get the actual component, just store the return value of the function:
 btc_api_client = get_btc_api_client()
 ```
 
+The environment variable `BTC_API_CLIENT_MODULE` holds the path to the component
+that should be returned from `get_btc_api_client` function, in case of our production
+environment, it would be `modules.btc_api_client.blockchain_com.BlockchainComClient`, the client that actually makes the request to the real API.
+
+## Different ways of Dependency Injection
+
+There are different ways of express dependency injection. Let's discuss them
+and then state why the decision to use environment variables was made.
+
+### Function parameter plus decorator
+
+One could have seen something like this:
+
+```python
+def get_btc_price(http_client: BaseHttpClient):
+    ...
+```
+
+The idea is that the `http_client` is never filled in by the programmer, but rather
+automatically injected.
+- Pros: very obvious that this function needs HTTP client as a dependency
+- Cons: as such, the call above would not work - upon calling the function, the
+parameter must be specified by the programmer. Therefore, we would need to modify
+our interface to something like this:
+
+```python
+@inject("http_client")
+def get_btc_price(http_client: BaseHttpClient = None):
+    ...
+```
+
+Although this would probably work, one can already foresee the amount of hacking
+needed in the background to make this work. The injection itself would not be very
+opaque.
+
+### Type annotations + config
+
+We could also have some custom type for denoting the dependency injection should happen:
+
+```python
+def get_btc_price(http_client: BaseHttpClient = storage("HTTP_CLIENT")):
+    ...
+```
+
+and then, in the `storage`, keep all services.
+- Pros: still quite obvious that there is a dependency on HTTP client
+- Cons: The injection logic would still be somewhat complicated
+
+### Getter function (chosen solution)
+
+```python
+def get_btc_price():
+    http_client: HttpClient = get_http_client()
+    ...
+```
+
+- Pros: transparent injection mechanism (all that needs
+to be checked is the implementation of `get_http_client`, which is a oneliner)
+- Cons: the function needs to be dug into to see what its dependencies actually are
+  (although this can be resolved with conventions, i.e. getting all the dependencies
+at the beginning of the function body)
+
+This solution was chosen due to simplicity and transparency, at the price of
+not forcing the programmer to specify the dependencies in the parameters.
+
+Environment variables were chosen over:
+- `config.py` containing a map of service names to its modules
+- storing strings in the database
+
+The former solution requires the app to know in which environment it runs, which contradicts
+one of the 12factor principles, and the latter means the app would rely on some data being
+present in the database.
+
+## Notes
+
+### Refactoring / Scaling
+
+Both refactoring and scaling becomes much easier. Because the rest of the application
+can only see the public interface of the service, we can replace the implementation
+of the service with another one, without the rest of the application knowing anything.
+
+Horizontal scaling can also be done easily: imagine we have a component with a lengthy
+computation. We can replace this component with a scheduler that will use multiple
+nodes to do the computation, collect the results, and then return those back to the
+caller. The rest of the application has no idea where the data were coming from
+in either case, therefore everything will work in both cases.
